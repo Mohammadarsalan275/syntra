@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { useSelector } from 'react-redux';
+import { useAuth } from '../../hook/useAuth';
 
 const initialForm = {
   username: '',
@@ -9,6 +11,9 @@ const initialForm = {
 
 export default function RegisterForm() {
   const [formData, setFormData] = useState(initialForm);
+  const [success, setSuccess] = useState(false);
+  const { handleRegister } = useAuth();
+  const { error, loading } = useSelector((state) => state.auth);
 
   const handleChange = (event) => {
     const { name, value } = event.target;
@@ -19,9 +24,13 @@ export default function RegisterForm() {
     }));
   };
 
-  const handleSubmit = (event) => {
+  const handleSubmit = async (event) => {
     event.preventDefault();
-    console.log('Register submitted:', formData);
+    setSuccess(false);
+    if (formData.password !== formData.confirmPassword) {
+      return;
+    }
+    setSuccess(await handleRegister(formData));
   };
 
   return (
@@ -39,6 +48,7 @@ export default function RegisterForm() {
           <input
             type="text"
             name="username"
+            required
             value={formData.username}
             onChange={handleChange}
             placeholder="johndoe"
@@ -51,6 +61,7 @@ export default function RegisterForm() {
           <input
             type="email"
             name="email"
+            required
             value={formData.email}
             onChange={handleChange}
             placeholder="name@example.com"
@@ -63,6 +74,7 @@ export default function RegisterForm() {
           <input
             type="password"
             name="password"
+            required
             value={formData.password}
             onChange={handleChange}
             placeholder="Create a strong password"
@@ -75,6 +87,7 @@ export default function RegisterForm() {
           <input
             type="password"
             name="confirmPassword"
+            required
             value={formData.confirmPassword}
             onChange={handleChange}
             placeholder="Repeat your password"
@@ -83,11 +96,25 @@ export default function RegisterForm() {
         </label>
       </div>
 
+      {formData.password !== formData.confirmPassword &&
+        formData.confirmPassword && (
+          <p role="alert" className="text-sm text-red-300">
+            Passwords do not match.
+          </p>
+        )}
+      {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
+      {success && (
+        <p role="status" className="text-sm text-green-300">
+          Registration successful.
+        </p>
+      )}
+
       <button
         type="submit"
+        disabled={loading}
         className="w-full rounded-xl bg-gradient-to-red from-red-600 via-red-500 to-rose-500 px-4 py-3 font-semibold text-white shadow-lg shadow-red-900/40 transition hover:brightness-110"
       >
-        Register
+        {loading ? 'Registering...' : 'Register'}
       </button>
     </form>
   );

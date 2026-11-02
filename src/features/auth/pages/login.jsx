@@ -1,4 +1,8 @@
 import { useState } from 'react';
+import { useSelector } from 'react-redux';
+import { useNavigate } from 'react-router';
+import { useAuth } from '../../hook/useAuth';
+
 
 const initialForm = {
   email: '',
@@ -6,8 +10,11 @@ const initialForm = {
 };
 
 export default function LoginForm() {
-  const [formData, setFormData] = useState(initialForm);
 
+  const navigate = useNavigate();
+  const [formData, setFormData] = useState(initialForm);
+  const { handleLogin } = useAuth();
+  const { error, loading } = useSelector((state) => state.auth);
   const handleChange = (event) => {
     const { name, value } = event.target;
 
@@ -17,9 +24,12 @@ export default function LoginForm() {
     }));
   };
 
-  const handleSubmit = (event) => {
+  const handleSubmit = async (event) => {
     event.preventDefault();
-    console.log('Login submitted:', formData);
+    const success = await handleLogin(formData);
+    if (success) {
+      navigate('/dashboard');
+    }
   };
 
   return (
@@ -37,6 +47,7 @@ export default function LoginForm() {
           <input
             type="email"
             name="email"
+            required
             value={formData.email}
             onChange={handleChange}
             placeholder="name@example.com"
@@ -49,6 +60,7 @@ export default function LoginForm() {
           <input
             type="password"
             name="password"
+            required
             value={formData.password}
             onChange={handleChange}
             placeholder="••••••••"
@@ -56,6 +68,8 @@ export default function LoginForm() {
           />
         </label>
       </div>
+
+      {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
 
       <div className="flex items-center justify-between text-sm text-slate-300">
         <label className="inline-flex items-center gap-2">
@@ -69,9 +83,10 @@ export default function LoginForm() {
 
       <button
         type="submit"
+        disabled={loading}
         className="w-full rounded-xl bg-gradient-to-red from-red-600 via-red-500 to-rose-500 px-4 py-3 font-semibold text-white shadow-lg shadow-red-900/40 transition hover:brightness-110"
       >
-        Login
+        {loading ? 'Logging in...' : 'Login'}
       </button>
     </form>
   );
