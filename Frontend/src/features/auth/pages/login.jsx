@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { useSelector } from 'react-redux';
 import { useNavigate } from 'react-router';
 import { useAuth } from '../../hook/useAuth';
+import { Navigate } from 'react-router';
+
 
 
 const initialForm = {
@@ -10,11 +12,10 @@ const initialForm = {
 };
 
 export default function LoginForm() {
-
   const navigate = useNavigate();
   const [formData, setFormData] = useState(initialForm);
   const { handleLogin } = useAuth();
-  const { error, loading } = useSelector((state) => state.auth);
+  const { user, error, loading } = useSelector((state) => state.auth);
   const handleChange = (event) => {
     const { name, value } = event.target;
 
@@ -31,6 +32,10 @@ export default function LoginForm() {
       navigate('/dashboard');
     }
   };
+
+  if (user) {
+    return <Navigate to="/dashboard" replace />;
+  }
 
   return (
     <form onSubmit={handleSubmit} className="w-full space-y-6">
