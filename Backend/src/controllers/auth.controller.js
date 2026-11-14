@@ -2,18 +2,37 @@
 
 import userModel from "../models/user.model.js";
 import jwt from "jsonwebtoken";
-import { sendEmail } from "../services/mail.services.js";
+import { sendEmail } from "../service/mail.service.js";
 
 function getJwtSecret() {
-  if (!process.env.JWT_SECRET) {
+  const secret = process.env.JWT_SECRET || process.env.jwt_secret;
+
+  if (!secret) {
     throw new Error("JWT_SECRET is not configured");
   }
 
-  return process.env.JWT_SECRET;
+  return secret;
+}
+
+function escapeHtml(value) {
+  return value.replace(/[&<>"']/g, (character) => {
+    const entities = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+
+    return entities[character];
+  });
 }
 
 // Register a new user
 export async function register(req, res) {
+  let newUser;
+  let isNewUser = false;
+
   try {
     const { name, email, password } = req.body;
     const normalizedEmail = email.toLowerCase().trim();
@@ -22,19 +41,24 @@ export async function register(req, res) {
       email: normalizedEmail,
     });
 
-    if (existingUser) {
+    if (existingUser?.isVerified) {
       return res.status(409).json({
         success: false,
         message: "User with this email already exists",
       });
     }
 
-    const newUser = await userModel.create({
-      name,
-      email: normalizedEmail,
-      password,
-      isVerified: false,
-    });
+    if (existingUser) {
+      newUser = existingUser;
+    } else {
+      isNewUser = true;
+      newUser = await userModel.create({
+        name,
+        email: normalizedEmail,
+        password,
+        isVerified: false,
+      });
+    }
 
     const token = jwt.sign(
       {
@@ -46,19 +70,17 @@ export async function register(req, res) {
       { expiresIn: "1d" }
     );
 
-    const apiUrl = process.env.API_URL;
-
-    if (!apiUrl) {
-      throw new Error("API_URL is not configured");
-    }
+    const apiUrl =
+      process.env.API_URL || `http://localhost:${process.env.PORT || 3000}`;
 
     const verifyUrl =
       `${apiUrl.replace(/\/$/, "")}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
 
-    await sendEmail({
-      to: newUser.email,
-      subject: "Welcome to Nexora - Verify your email",
-      text: `Hello ${newUser.name},
+    try {
+      await sendEmail({
+        to: newUser.email,
+        subject: "Welcome to Nexora - Verify your email",
+        text: `Hello ${newUser.name},
 
 Thank you for registering on Nexora.
 
@@ -66,14 +88,33 @@ Verify your email using this link:
 ${verifyUrl}
 
 This link expires in 24 hours.`,
-      html: `
-        <h2>Welcome to Nexora, ${newUser.name}!</h2>
+        html: `
+        <h2>Welcome to Nexora, ${escapeHtml(newUser.name)}!</h2>
         <p>Thank you for registering.</p>
         <p>Click the link below to verify your email:</p>
         <a href="${verifyUrl}">Verify my email</a>
         <p>This link expires in 24 hours.</p>
       `,
-    });
+      });
+    } catch (error) {
+      console.error("Verification email delivery failed:", error);
+      if (isNewUser) {
+        try {
+          await userModel.deleteOne({ _id: newUser._id });
+        } catch (cleanupError) {
+          console.error(
+            "Failed to remove unverified user after email failure:",
+            cleanupError,
+          );
+        }
+      }
+
+      return res.status(503).json({
+        success: false,
+        message:
+          "Could not send the verification email. Check the mail settings and try registering again.",
+      });
+    }
 
     return res.status(201).json({
       success: true,
@@ -87,7 +128,7 @@ This link expires in 24 hours.`,
       },
     });
   } catch (error) {
-    console.error("Registration error:", error.message);
+    console.error("Registration error:", error);
 
     if (error.code === 11000) {
       return res.status(409).json({
@@ -239,9 +280,7 @@ export async function verifyEmail(req, res) {
 // Get the currently authenticated user
 export async function getMe(req, res) {
   try {
-    const user = await userModel
-      .findById(req.user.id)
-      .select("-password");
+    const user = await userModel.findById(req.user.id);
 
     if (!user) {
       return res.status(404).json({

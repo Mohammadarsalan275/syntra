@@ -8,7 +8,7 @@ import {
   login,
   getMe,
   verifyEmail,
-} from "../controllers/auth.controllers.js";
+} from "../controllers/auth.controller.js";
 
 import { authUser } from "../middleware/auth.middleware.js";
 

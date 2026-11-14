@@ -8,9 +8,9 @@ export function useAuth() {
   async function handleRegister({ email, username, password }) {
     try {
       dispatch(setLoading(true));
-      const data = await register({ email, username, password });
       dispatch(setError(null));
       await register({ email, username, password });
+      dispatch(setError(null));
       return true;
     } catch (error) {
       dispatch(
@@ -27,7 +27,7 @@ export function useAuth() {
       dispatch(setLoading(true));
       dispatch(setError(null));
       const data = await getMe();
-      dispatch(setUser(data));
+      dispatch(setUser(data.user));
       return true;
     } catch (error) {
       dispatch(
