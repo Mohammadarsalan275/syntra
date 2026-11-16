@@ -1,9 +1,11 @@
 import { useState } from 'react';
+import { Route, Routes } from 'react-router';
 
 import LoginForm from '../features/auth/pages/login';
 import RegisterForm from '../features/auth/pages/Register';
+import Dashboard from '../features/chat/pages/Dashboard';
 
-const App = () => {
+const AuthPage = () => {
   const [activeForm, setActiveForm] = useState('login');
 
   return (
@@ -39,5 +41,12 @@ const App = () => {
     </div>
   );
 };
+
+const App = () => (
+  <Routes>
+    <Route path="/dashboard" element={<Dashboard />} />
+    <Route path="*" element={<AuthPage />} />
+  </Routes>
+);
 
 export default App;

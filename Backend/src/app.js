@@ -4,6 +4,7 @@ import cors from "cors";
 import AuthRouter from "./routes/auth.routes.js";
 import morgan from "morgan";
 const app = express();
+import  chatRouter  from "./routes/chat.routes.js";
 
 app.use(
   cors({
@@ -33,5 +34,8 @@ app.get("/", (req, res) => {
     status: "ok",
   });
 });
+
+app.use("/api/chat", chatRouter);
+app.use("/api/chat", chatRouter);
 
 export default app;
