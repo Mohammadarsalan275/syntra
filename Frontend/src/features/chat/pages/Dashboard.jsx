@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { sendMessage } from './service/chat.api';
 
 const STORAGE_KEY = 'syntra-chat-history';
 
@@ -77,20 +78,21 @@ export default function Dashboard() {
     textareaRef.current?.focus();
   }
 
-  function submitMessage(event) {
+  async function submitMessage(event) {
     event.preventDefault();
     const content = message.trim();
 
     if (!content) return;
 
     const timestamp = new Date().toISOString();
-    const currentChat = chats.find((chat) => chat.id === activeChatId);
+    const existingChat = chats.find((chat) => chat.id === activeChatId);
+    const newChatId = existingChat?.id ?? crypto.randomUUID();
 
-    if (currentChat) {
+    if (existingChat) {
       setChats((previousChats) =>
         previousChats
           .map((chat) =>
-            chat.id === currentChat.id
+            chat.id === existingChat.id
               ? {
                   ...chat,
                   messages: [...chat.messages, { role: 'user', content }],
@@ -102,7 +104,7 @@ export default function Dashboard() {
       );
     } else {
       const newChat = {
-        id: crypto.randomUUID(),
+        id: newChatId,
         title: content.length > 42 ? `${content.slice(0, 42).trim()}…` : content,
         messages: [{ role: 'user', content }],
         updatedAt: timestamp,
@@ -114,6 +116,47 @@ export default function Dashboard() {
 
     setMessage('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
+
+    try {
+      const response = await sendMessage({
+        message: content,
+        chatId: newChatId,
+      });
+
+      const assistantReply = response?.message || 'AI suggestions are unavailable right now.';
+
+      setChats((previousChats) =>
+        previousChats
+          .map((chat) =>
+            chat.id === newChatId
+              ? {
+                  ...chat,
+                  messages: [...chat.messages, { role: 'assistant', content: assistantReply }],
+                  updatedAt: new Date().toISOString(),
+                }
+              : chat,
+          )
+          .sort((first, second) => second.updatedAt.localeCompare(first.updatedAt)),
+      );
+    } catch (error) {
+      console.error('Unable to get AI response.', error);
+      setChats((previousChats) =>
+        previousChats
+          .map((chat) =>
+            chat.id === newChatId
+              ? {
+                  ...chat,
+                  messages: [
+                    ...chat.messages,
+                    { role: 'assistant', content: 'AI suggestions are unavailable right now. Please try again.' },
+                  ],
+                  updatedAt: new Date().toISOString(),
+                }
+              : chat,
+          )
+          .sort((first, second) => second.updatedAt.localeCompare(first.updatedAt)),
+      );
+    }
   }
 
   function removeChat(event, chatId) {
@@ -141,7 +184,7 @@ export default function Dashboard() {
       )}
 
       <aside
-        className={`fixed inset-y-0 left-0 z-30 flex w-[260px] shrink-0 flex-col bg-[#171717] p-3 transition-transform duration-200 md:static md:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-30 flex w-{260px} shrink-0 flex-col bg-[#171717] p-3 transition-transform duration-200 md:static md:translate-x-0 ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
@@ -282,7 +325,7 @@ export default function Dashboard() {
                         setMessage(suggestion.prompt);
                         textareaRef.current?.focus();
                       }}
-                      className="rounded-2xl border border-white/10 p-4 text-left transition hover:border-white/20 hover:bg-white/[0.03]"
+                      className="rounded-2xl border border-white/10 p-4 text-left transition hover:border-white/20 hover:bg-white/5"
                     >
                       <span className="block text-sm font-medium text-[#e5e5e5]">
                         {suggestion.title}
@@ -314,7 +357,7 @@ export default function Dashboard() {
                 rows={1}
                 placeholder="Message Syntra"
                 aria-label="Message Syntra"
-                className="block max-h-[180px] min-h-11 w-full resize-none bg-transparent px-3 py-3 text-sm leading-5 text-white outline-none placeholder:text-[#8e8e8e]"
+                className="block max-h-{180px} min-h-11 w-full resize-none bg-transparent px-3 py-3 text-sm leading-5 text-white outline-none placeholder:text-[#8e8e8e]"
               />
               <div className="flex items-center justify-between px-1 pb-0.5">
                 <span className="px-2 text-xs text-[#8e8e8e]">Shift + Enter for a new line</span>
