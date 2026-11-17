@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { sendMessage } from './service/chat.api';
+import { deleteChat as deleteChatRequest, renameChat, sendMessage } from './service/chat.api';
 
 const STORAGE_KEY = 'syntra-chat-history';
 const THEME_STORAGE_KEY = 'syntra-theme';
@@ -10,13 +10,15 @@ function loadChats() {
     const parsedChats = storedChats ? JSON.parse(storedChats) : [];
 
     return Array.isArray(parsedChats)
-      ? parsedChats.filter(
-          (chat) =>
-            typeof chat.id === 'string' &&
-            typeof chat.title === 'string' &&
-            Array.isArray(chat.messages) &&
-            chat.incognito !== true,
-        )
+      ? parsedChats
+          .filter(
+            (chat) =>
+              typeof chat.id === 'string' &&
+              typeof chat.title === 'string' &&
+              Array.isArray(chat.messages) &&
+              chat.incognito !== true,
+          )
+          .map((chat) => ({ ...chat, localOnly: chat.localOnly ?? true }))
       : [];
   } catch (error) {
     console.error('Unable to load chat history from local storage.', error);
@@ -75,6 +77,10 @@ export default function Dashboard() {
   const [isSending, setIsSending] = useState(false);
   const [theme, setTheme] = useState(loadTheme);
   const [isIncognito, setIsIncognito] = useState(false);
+  const [editingChatId, setEditingChatId] = useState(null);
+  const [chatTitleDraft, setChatTitleDraft] = useState('');
+  const [actionError, setActionError] = useState('');
+  const [copiedMessageId, setCopiedMessageId] = useState('');
   const textareaRef = useRef(null);
   const isDark = theme === 'dark';
   const activeChat = chats.find((chat) => chat.id === activeChatId);
@@ -82,6 +88,12 @@ export default function Dashboard() {
     () => chats.filter((chat) => chat.incognito !== true),
     [chats],
   );
+  const lastAssistantMessageIndex = activeChat
+    ? activeChat.messages.reduce(
+        (lastIndex, item, index) => item.role === 'assistant' ? index : lastIndex,
+        -1,
+      )
+    : -1;
 
   useEffect(() => {
     try {
@@ -123,7 +135,9 @@ export default function Dashboard() {
     const existingChat = chats.find((chat) => chat.id === activeChatId);
     const newChatId = existingChat?.id ?? crypto.randomUUID();
     const serverChatId =
-      existingChat?.id && /^[a-f\d]{24}$/i.test(existingChat.id)
+      existingChat &&
+      !existingChat.localOnly &&
+      /^[a-f\d]{24}$/i.test(existingChat.id)
         ? existingChat.id
         : undefined;
 
@@ -148,6 +162,7 @@ export default function Dashboard() {
         messages: [{ role: 'user', content }],
         updatedAt: timestamp,
         incognito: isIncognito,
+        localOnly: true,
       };
 
       setChats((previousChats) => [newChat, ...previousChats]);
@@ -178,6 +193,7 @@ export default function Dashboard() {
                   ...chat,
                   id: persistedChatId,
                   title: response.chat?.title || chat.title,
+                  localOnly: response.localOnly ?? !response.chat,
                   messages: [
                     ...chat.messages,
                     {
@@ -224,10 +240,128 @@ export default function Dashboard() {
     }
   }
 
-  function removeChat(event, chatId) {
+  async function removeChat(event, chatId) {
     event.stopPropagation();
+    const chat = chats.find((item) => item.id === chatId);
+    if (!chat) return;
+
+    if (!chat.localOnly && /^[a-f\d]{24}$/i.test(chatId)) {
+      try {
+        await deleteChatRequest(chatId);
+      } catch (error) {
+        console.error('Unable to delete chat.', error);
+        setActionError(error.response?.data?.message || 'Unable to delete this chat. Please try again.');
+        return;
+      }
+    }
+
     setChats((previousChats) => previousChats.filter((chat) => chat.id !== chatId));
     if (activeChatId === chatId) setActiveChatId(null);
+    if (editingChatId === chatId) setEditingChatId(null);
+    setActionError('');
+  }
+
+  function beginRenameChat(event, chat) {
+    event.stopPropagation();
+    setActionError('');
+    setEditingChatId(chat.id);
+    setChatTitleDraft(chat.title);
+  }
+
+  async function saveChatTitle(event, chat) {
+    event.preventDefault();
+    const title = chatTitleDraft.trim();
+    if (!title || title.length > 120) {
+      setActionError('Chat titles must be between 1 and 120 characters.');
+      return;
+    }
+
+    if (!chat.localOnly && /^[a-f\d]{24}$/i.test(chat.id)) {
+      try {
+        await renameChat(chat.id, title);
+      } catch (error) {
+        console.error('Unable to rename chat.', error);
+        setActionError(error.response?.data?.message || 'Unable to rename this chat. Please try again.');
+        return;
+      }
+    }
+
+    setChats((previousChats) =>
+      previousChats.map((item) => item.id === chat.id ? { ...item, title } : item),
+    );
+    setEditingChatId(null);
+    setActionError('');
+  }
+
+  async function regenerateAnswer(chat, assistantIndex) {
+    const userIndex = chat.messages
+      .slice(0, assistantIndex)
+      .reduce((lastIndex, item, index) => item.role === 'user' ? index : lastIndex, -1);
+    if (userIndex === -1 || isSending) return;
+
+    const serverChatId =
+      !chat.localOnly && /^[a-f\d]{24}$/i.test(chat.id) ? chat.id : undefined;
+    setIsSending(true);
+    setActionError('');
+
+    try {
+      const response = await sendMessage({
+        message: chat.messages[userIndex].content,
+        chatId: serverChatId,
+        history: chat.messages.slice(0, userIndex),
+        searchMode: chat.messages[assistantIndex].searchMode ?? 'none',
+        incognito: chat.incognito === true,
+        regenerate: !chat.localOnly && /^[a-f\d]{24}$/i.test(chat.id),
+      });
+      const replacementChatId =
+        response.localOnly !== true && response.chat?._id
+          ? response.chat._id
+          : chat.id;
+
+      setChats((previousChats) =>
+        previousChats.map((item) =>
+          item.id === chat.id
+            ? {
+                ...item,
+                id: replacementChatId,
+                localOnly: response.localOnly ?? item.localOnly,
+                messages: item.messages.map((entry, index) =>
+                  index === assistantIndex
+                    ? {
+                        ...entry,
+                        content: response.message,
+                        sources: response.sources ?? [],
+                        searchMode: response.searchMode ?? 'none',
+                      }
+                    : entry,
+                ),
+                updatedAt: new Date().toISOString(),
+              }
+            : item,
+        ),
+      );
+      if (replacementChatId !== chat.id) {
+        setActiveChatId((currentChatId) =>
+          currentChatId === chat.id ? replacementChatId : currentChatId,
+        );
+      }
+    } catch (error) {
+      console.error('Unable to regenerate AI response.', error);
+      setActionError(error.response?.data?.message || 'Unable to regenerate this response. Please try again.');
+    } finally {
+      setIsSending(false);
+    }
+  }
+
+  async function copyResponse(content, messageId) {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopiedMessageId(messageId);
+      setActionError('');
+    } catch (error) {
+      console.error('Unable to copy response.', error);
+      setActionError('Unable to copy this response. Check your clipboard permissions and try again.');
+    }
   }
 
   function handleComposerKeyDown(event) {
@@ -298,48 +432,100 @@ export default function Dashboard() {
             <ul className="space-y-1">
               {savedChats.map((chat) => (
                 <li key={chat.id}>
-                  <div
-                    className={`group flex items-center gap-1 rounded-lg pr-1 transition ${
-                      activeChatId === chat.id
-                        ? isDark
-                          ? 'bg-[#2f2f2f] text-white'
-                          : 'bg-slate-200 text-slate-900'
-                        : isDark
-                          ? 'text-[#c5c5c5] hover:bg-[#242424]'
-                          : 'text-slate-600 hover:bg-slate-200'
-                    }`}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveChatId(chat.id);
-                        setSidebarOpen(false);
-                      }}
-                      className="min-w-0 flex-1 truncate px-3 py-2 text-left text-sm"
-                    >
-                      {chat.title}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(event) => removeChat(event, chat.id)}
-                      aria-label={`Delete ${chat.title}`}
-                      className={`rounded p-1 opacity-0 transition group-hover:opacity-100 focus:opacity-100 ${
-                        isDark
-                          ? 'text-[#8e8e8e] hover:bg-[#3b3b3b] hover:text-white'
-                          : 'text-slate-500 hover:bg-slate-300 hover:text-slate-900'
+                  {editingChatId === chat.id ? (
+                    <form
+                      onSubmit={(event) => saveChatTitle(event, chat)}
+                      className={`flex gap-1 rounded-lg p-1 ${
+                        isDark ? 'bg-[#2f2f2f]' : 'bg-slate-200'
                       }`}
                     >
-                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className="size-4">
-                        <path
-                          d="M4 7h16m-10 4v6m4-6v6M6 7l1 14h10l1-14M9 7V4h6v3"
-                          stroke="currentColor"
-                          strokeWidth="1.5"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    </button>
-                  </div>
+                      <input
+                        autoFocus
+                        value={chatTitleDraft}
+                        maxLength={120}
+                        aria-label="Chat title"
+                        onChange={(event) => setChatTitleDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Escape') setEditingChatId(null);
+                        }}
+                        className={`min-w-0 flex-1 bg-transparent px-2 text-sm outline-none ${
+                          isDark ? 'text-white' : 'text-slate-900'
+                        }`}
+                      />
+                      <button
+                        type="submit"
+                        aria-label="Save chat title"
+                        className="rounded px-2 text-xs font-medium text-violet-400 hover:bg-white/10"
+                      >
+                        Save
+                      </button>
+                    </form>
+                  ) : (
+                    <div
+                      className={`group flex items-center gap-1 rounded-lg pr-1 transition ${
+                        activeChatId === chat.id
+                          ? isDark
+                            ? 'bg-[#2f2f2f] text-white'
+                            : 'bg-slate-200 text-slate-900'
+                          : isDark
+                            ? 'text-[#c5c5c5] hover:bg-[#242424]'
+                            : 'text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveChatId(chat.id);
+                          setSidebarOpen(false);
+                        }}
+                        className="min-w-0 flex-1 truncate px-3 py-2 text-left text-sm"
+                      >
+                        {chat.title}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isSending}
+                        onClick={(event) => beginRenameChat(event, chat)}
+                        aria-label={`Rename ${chat.title}`}
+                        className={`rounded p-1 opacity-0 transition group-hover:opacity-100 focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-40 ${
+                          isDark
+                            ? 'text-[#8e8e8e] hover:bg-[#3b3b3b] hover:text-white'
+                            : 'text-slate-500 hover:bg-slate-300 hover:text-slate-900'
+                        }`}
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className="size-4">
+                          <path
+                            d="m15 5 4 4M4 20l4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isSending}
+                        onClick={(event) => removeChat(event, chat.id)}
+                        aria-label={`Delete ${chat.title}`}
+                        className={`rounded p-1 opacity-0 transition group-hover:opacity-100 focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-40 ${
+                          isDark
+                            ? 'text-[#8e8e8e] hover:bg-[#3b3b3b] hover:text-white'
+                            : 'text-slate-500 hover:bg-slate-300 hover:text-slate-900'
+                        }`}
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className="size-4">
+                          <path
+                            d="M4 7h16m-10 4v6m4-6v6M6 7l1 14h10l1-14M9 7V4h6v3"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      </button>
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>
@@ -409,6 +595,11 @@ export default function Dashboard() {
 
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex-1 overflow-y-auto px-4">
+            {actionError && (
+              <p role="alert" className="mx-auto mt-3 w-fit rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-400">
+                {actionError}
+              </p>
+            )}
             {isIncognito && (
               <p className="mx-auto mt-3 w-fit rounded-full border border-violet-400/30 bg-violet-400/10 px-3 py-1 text-xs text-violet-300">
                 Incognito chat — this conversation won’t be saved
@@ -421,7 +612,7 @@ export default function Dashboard() {
                     <div className={`mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
                       isDark ? 'bg-[#343434] text-white' : 'bg-slate-200 text-slate-700'
                     }`}>
-                      S
+                      {chatMessage.role === 'user' ? 'You' : 'S'}
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className={`whitespace-pre-wrap pt-1.5 text-[15px] leading-7 ${isDark ? 'text-[#ececec]' : 'text-slate-800'}`}>
@@ -451,6 +642,31 @@ export default function Dashboard() {
                               </li>
                             ))}
                           </ul>
+                        </div>
+                      )}
+                      {chatMessage.role === 'assistant' && (
+                        <div className="mt-2 flex items-center gap-3">
+                          {index === lastAssistantMessageIndex && (
+                            <button
+                              type="button"
+                              disabled={isSending}
+                              onClick={() => regenerateAnswer(activeChat, index)}
+                              className={`text-xs transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                                isDark ? 'text-[#8e8e8e] hover:text-white' : 'text-slate-500 hover:text-slate-900'
+                              }`}
+                            >
+                              Regenerate
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => copyResponse(chatMessage.content, `${activeChat.id}-${index}`)}
+                            className={`text-xs transition ${
+                              isDark ? 'text-[#8e8e8e] hover:text-white' : 'text-slate-500 hover:text-slate-900'
+                            }`}
+                          >
+                            {copiedMessageId === `${activeChat.id}-${index}` ? 'Copied' : 'Copy'}
+                          </button>
                         </div>
                       )}
                     </div>

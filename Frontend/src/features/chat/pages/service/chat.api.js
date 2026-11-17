@@ -17,13 +17,21 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-export const sendMessage = async ({ message, chatId, history, searchMode, incognito }) => {
+export const sendMessage = async ({
+  message,
+  chatId,
+  history,
+  searchMode,
+  incognito,
+  regenerate,
+}) => {
   const response = await api.post("/api/chat/send", {
     message,
     chatId,
     history,
     searchMode,
     incognito,
+    regenerate,
   });
   return response.data;
 };
@@ -35,5 +43,15 @@ export const getChats = async () => {
 
 export const getMessage = async (chatId) => {
   const response = await api.get(`/api/chat/chats/${chatId}/messages`);
+  return response.data;
+};
+
+export const renameChat = async (chatId, title) => {
+  const response = await api.patch(`/api/chat/chats/${chatId}`, { title });
+  return response.data;
+};
+
+export const deleteChat = async (chatId) => {
+  const response = await api.delete(`/api/chat/delete/${chatId}`);
   return response.data;
 };
