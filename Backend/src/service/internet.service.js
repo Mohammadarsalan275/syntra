@@ -1,5 +1,8 @@
 import { tavily } from "@tavily/core";
 
+const researchTimeoutMs = 5 * 60 * 1000;
+const researchPollIntervalMs = 2000;
+
 function getTavilyClient() {
   const apiKey = process.env.TAVILY_API_KEY;
   if (!apiKey) {
@@ -47,4 +50,47 @@ export async function searchInternet(query) {
     query: response.query,
     sources: normalizeSources(response.results),
   };
+}
+
+export async function deepSearchInternet(query) {
+  const client = getTavilyClient();
+  let task;
+  try {
+    task = await client.research(query, {
+      model: "mini",
+      citationFormat: "numbered",
+      output_length: "standard",
+      timeout: 30000,
+    });
+  } catch (error) {
+    throw getTavilyError(error);
+  }
+
+  const deadline = Date.now() + researchTimeoutMs;
+  while (Date.now() < deadline) {
+    let result;
+    try {
+      result = await client.getResearch(task.requestId);
+    } catch (error) {
+      throw getTavilyError(error);
+    }
+
+    if (result.status === "completed") {
+      return {
+        report:
+          typeof result.content === "string"
+            ? result.content
+            : JSON.stringify(result.content),
+        sources: normalizeSources(result.sources),
+      };
+    }
+
+    if (result.status === "failed" || result.status === "cancelled") {
+      throw new Error("Tavily could not complete the deep research task.");
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, researchPollIntervalMs));
+  }
+
+  throw new Error("Deep research timed out. Try a more focused question.");
 }

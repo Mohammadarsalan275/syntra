@@ -841,6 +841,23 @@ export default function Dashboard() {
                   </button>
                   <button
                     type="button"
+                    aria-pressed={searchMode === 'deep'}
+                    disabled={isSending}
+                    onClick={() =>
+                      setSearchMode((mode) => (mode === 'deep' ? 'none' : 'deep'))
+                    }
+                    className={`rounded-full border px-3 py-1.5 text-xs transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                      searchMode === 'deep'
+                        ? 'border-violet-400/50 bg-violet-400/15 text-violet-200'
+                        : isDark
+                          ? 'border-white/10 text-[#a3a3a3] hover:border-white/25 hover:text-white'
+                          : 'border-slate-300 text-slate-600 hover:border-slate-400 hover:text-slate-900'
+                    }`}
+                  >
+                    Deep research
+                  </button>
+                  <button
+                    type="button"
                     disabled={isSending}
                     onClick={() => documentInputRef.current?.click()}
                     className={`rounded-full border px-3 py-1.5 text-xs transition disabled:cursor-not-allowed disabled:opacity-50 ${
@@ -871,9 +888,11 @@ export default function Dashboard() {
             </form>
             {isSending && (
               <p role="status" className={`mx-auto mt-2 max-w-3xl text-center text-xs ${isDark ? 'text-[#a3a3a3]' : 'text-slate-500'}`}>
-                {searchMode === 'internet'
-                  ? 'Searching the internet...'
-                  : 'Syntra is thinking...'}
+                {searchMode === 'deep'
+                  ? 'Researching multiple sources and preparing a cited report...'
+                  : searchMode === 'internet'
+                    ? 'Searching the internet...'
+                    : 'Syntra is thinking...'}
               </p>
             )}
             <p className={`mx-auto mt-3 max-w-3xl text-center text-[11px] ${isDark ? 'text-[#777]' : 'text-slate-500'}`}>
