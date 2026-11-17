@@ -15,7 +15,14 @@ export function authUser(req, res, next) {
     });
   }
 
-  const secret = process.env.JWT_SECRET || process.env.jwt_secret;
+  const demoMode =
+    process.env.NODE_ENV !== "production" && process.env.DEMO_AUTH_ENABLED !== "false";
+  const secret =
+    process.env.JWT_SECRET ||
+    process.env.jwt_secret ||
+    (demoMode
+      ? "nexora-local-development-only-secret"
+      : null);
   if (!secret) {
     return res.status(500).json({
       success: false,
@@ -25,6 +32,13 @@ export function authUser(req, res, next) {
 
   try {
     req.user = jwt.verify(token, secret);
+    if (req.user.demo && !demoMode) {
+      return res.status(401).json({
+        success: false,
+        message: "Demo authentication is disabled.",
+      });
+    }
+    req.user._id = req.user._id || req.user.id;
     return next();
   } catch {
     return res.status(401).json({

@@ -2,16 +2,134 @@
 
 import userModel from "../models/user.model.js";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
+import { randomUUID } from "node:crypto";
 import { sendEmail } from "../service/mail.service.js";
 
 function getJwtSecret() {
-  const secret = process.env.JWT_SECRET || process.env.jwt_secret;
+  const demoMode = isDemoAuthEnabled();
+  const secret =
+    process.env.JWT_SECRET ||
+    process.env.jwt_secret ||
+    (demoMode
+      ? "nexora-local-development-only-secret"
+      : null);
 
   if (!secret) {
     throw new Error("JWT_SECRET is not configured");
   }
 
   return secret;
+}
+
+function isDemoAuthEnabled() {
+  return process.env.NODE_ENV !== "production" && process.env.DEMO_AUTH_ENABLED !== "false";
+}
+
+const demoUsers = new Map();
+
+function createAuthToken(user) {
+  return jwt.sign(
+    { id: user._id, email: user.email, demo: true },
+    getJwtSecret(),
+    { expiresIn: "7d" },
+  );
+}
+
+function demoAuthDisabled(res) {
+  return res.status(404).json({
+    success: false,
+    message: "Demo authentication is disabled.",
+  });
+}
+
+export async function registerDemo(req, res) {
+  if (!isDemoAuthEnabled()) return demoAuthDisabled(res);
+
+  try {
+    const { name, email, password } = req.body;
+    const normalizedEmail = email.toLowerCase().trim();
+    const existingUser = demoUsers.get(normalizedEmail);
+
+    if (existingUser) {
+      return res.status(409).json({
+        success: false,
+        message: "User with this email already exists",
+      });
+    }
+
+    const user = {
+      _id: randomUUID(),
+      name: name.trim(),
+      email: normalizedEmail,
+      password: await bcrypt.hash(password, 10),
+      isVerified: true,
+    };
+    demoUsers.set(normalizedEmail, user);
+
+    return res.status(201).json({
+      success: true,
+      message: "Registration successful. You can now log in.",
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        isVerified: user.isVerified,
+      },
+    });
+  } catch (error) {
+    console.error("Demo registration error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Something went wrong while registering the demo user",
+    });
+  }
+}
+
+export async function loginDemo(req, res) {
+  if (!isDemoAuthEnabled()) return demoAuthDisabled(res);
+
+  try {
+    const { email, password } = req.body;
+    const normalizedEmail = email.toLowerCase().trim();
+    let user = demoUsers.get(normalizedEmail);
+
+    if (!user && normalizedEmail === "demo@nexora.com" && password === "Demo123!") {
+      user = {
+        _id: randomUUID(),
+        name: "Demo User",
+        email: normalizedEmail,
+        password: await bcrypt.hash(password, 10),
+        isVerified: true,
+      };
+      demoUsers.set(normalizedEmail, user);
+    }
+
+    if (!user || !(await bcrypt.compare(password, user.password)) || !user.isVerified) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid email or password",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Login successful",
+      token: createAuthToken(user),
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        isVerified: user.isVerified,
+      },
+    });
+  } catch (error) {
+    console.error("Demo login error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Something went wrong while logging in",
+    });
+  }
 }
 
 function escapeHtml(value) {

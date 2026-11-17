@@ -9,12 +9,22 @@ export function useAuth() {
     try {
       dispatch(setLoading(true));
       dispatch(setError(null));
-      await register({ email, username, password });
+      const data = await register({ email, username, password });
       dispatch(setError(null));
-      return true;
+      return data.message;
     } catch (error) {
+      const validationErrors = error.response?.data?.errors;
+      const errorMessage = Array.isArray(validationErrors)
+        ? validationErrors
+            .map(({ field, message }) => `${field}: ${message}`)
+            .join(". ")
+        : error.response?.data?.message ||
+          (error.request
+            ? "Cannot connect to the server. Make sure the backend is running on port 3000."
+              : error.message || "Registration failed");
+
       dispatch(
-        setError(error.response?.data?.message || "Registration failed"),
+        setError(errorMessage),
       );
       return false;
     } finally {
@@ -31,7 +41,9 @@ export function useAuth() {
       return true;
     } catch (error) {
       dispatch(
-        setError(error.response?.data?.message || "Failed to fetch user data"),
+        setError(
+          error.response?.data?.message || error.message || "Failed to fetch user data",
+        ),
       );
       return false;
     } finally {
@@ -47,7 +59,14 @@ export function useAuth() {
       dispatch(setUser(data.user));
       return true;
     } catch (error) {
-      dispatch(setError(error.response?.data?.message || "Login failed"));
+      dispatch(
+        setError(
+          error.response?.data?.message ||
+            (error.request
+              ? "Cannot connect to the server. Make sure the backend is running on port 3000."
+              : error.message || "Login failed"),
+        ),
+      );
       return false;
     } finally {
       dispatch(setLoading(false));

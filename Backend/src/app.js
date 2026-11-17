@@ -9,7 +9,19 @@ const app = express();
 
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
+    origin(origin, callback) {
+      const configuredOrigin = process.env.CLIENT_URL || "http://localhost:5173";
+      const isLocalDevelopmentOrigin =
+        process.env.NODE_ENV !== "production" &&
+        typeof origin === "string" &&
+        /^http:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(origin);
+
+      if (!origin || origin === configuredOrigin || isLocalDevelopmentOrigin) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Origin is not allowed by CORS"));
+    },
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE"],
   }),

@@ -6,6 +6,8 @@ import { body, validationResult } from "express-validator";
 import {
   register,
   login,
+  loginDemo,
+  registerDemo,
   getMe,
   verifyEmail,
 } from "../controllers/auth.controller.js";
@@ -83,6 +85,8 @@ const loginValidation = [
 // Authentication routes
 AuthRouter.post("/register", registerValidation, register);
 AuthRouter.post("/login", loginValidation, login);
+AuthRouter.post("/demo/register", registerValidation, registerDemo);
+AuthRouter.post("/demo/login", loginValidation, loginDemo);
 AuthRouter.get("/get-me", authUser, getMe);
 AuthRouter.get("/verify-email", verifyEmail);
 

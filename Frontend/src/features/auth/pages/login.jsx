@@ -74,6 +74,14 @@ export default function LoginForm() {
         </label>
       </div>
 
+      {import.meta.env.DEV && import.meta.env.VITE_USE_DEMO_AUTH !== 'false' && (
+        <p className="text-center text-sm text-slate-300">
+          Demo account: <span className="text-white">demo@nexora.com</span>
+          {' / '}
+          <span className="text-white">Demo123!</span>
+        </p>
+      )}
+
       {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
 
       <div className="flex items-center justify-between text-sm text-slate-300">

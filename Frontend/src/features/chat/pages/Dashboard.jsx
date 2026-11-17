@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { sendMessage } from './service/chat.api';
 
 const STORAGE_KEY = 'syntra-chat-history';
+const THEME_STORAGE_KEY = 'syntra-theme';
 
 function loadChats() {
   try {
@@ -13,12 +14,22 @@ function loadChats() {
           (chat) =>
             typeof chat.id === 'string' &&
             typeof chat.title === 'string' &&
-            Array.isArray(chat.messages),
+            Array.isArray(chat.messages) &&
+            chat.incognito !== true,
         )
       : [];
   } catch (error) {
     console.error('Unable to load chat history from local storage.', error);
     return [];
+  }
+}
+
+function loadTheme() {
+  try {
+    return window.localStorage.getItem(THEME_STORAGE_KEY) === 'light' ? 'light' : 'dark';
+  } catch (error) {
+    console.error('Unable to load theme preference.', error);
+    return 'dark';
   }
 }
 
@@ -60,16 +71,33 @@ export default function Dashboard() {
   const [activeChatId, setActiveChatId] = useState(null);
   const [message, setMessage] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [searchMode, setSearchMode] = useState('none');
+  const [isSending, setIsSending] = useState(false);
+  const [theme, setTheme] = useState(loadTheme);
+  const [isIncognito, setIsIncognito] = useState(false);
   const textareaRef = useRef(null);
+  const isDark = theme === 'dark';
   const activeChat = chats.find((chat) => chat.id === activeChatId);
+  const savedChats = useMemo(
+    () => chats.filter((chat) => chat.incognito !== true),
+    [chats],
+  );
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(chats));
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(savedChats));
     } catch (error) {
       console.error('Unable to save chat history to local storage.', error);
     }
-  }, [chats]);
+  }, [savedChats]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch (error) {
+      console.error('Unable to save theme preference.', error);
+    }
+  }, [theme]);
 
   function startNewChat() {
     setActiveChatId(null);
@@ -78,15 +106,26 @@ export default function Dashboard() {
     textareaRef.current?.focus();
   }
 
+  function toggleIncognito() {
+    if (isSending) return;
+    startNewChat();
+    setIsIncognito((enabled) => !enabled);
+  }
+
   async function submitMessage(event) {
     event.preventDefault();
     const content = message.trim();
 
-    if (!content) return;
+    if (!content || isSending) return;
 
+    const requestedSearchMode = searchMode;
     const timestamp = new Date().toISOString();
     const existingChat = chats.find((chat) => chat.id === activeChatId);
     const newChatId = existingChat?.id ?? crypto.randomUUID();
+    const serverChatId =
+      existingChat?.id && /^[a-f\d]{24}$/i.test(existingChat.id)
+        ? existingChat.id
+        : undefined;
 
     if (existingChat) {
       setChats((previousChats) =>
@@ -108,6 +147,7 @@ export default function Dashboard() {
         title: content.length > 42 ? `${content.slice(0, 42).trim()}…` : content,
         messages: [{ role: 'user', content }],
         updatedAt: timestamp,
+        incognito: isIncognito,
       };
 
       setChats((previousChats) => [newChat, ...previousChats]);
@@ -116,14 +156,19 @@ export default function Dashboard() {
 
     setMessage('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    setIsSending(true);
 
     try {
       const response = await sendMessage({
         message: content,
-        chatId: newChatId,
+        chatId: serverChatId,
+        history: existingChat?.messages ?? [],
+        searchMode: requestedSearchMode,
+        incognito: existingChat?.incognito === true || isIncognito,
       });
 
-      const assistantReply = response?.message || 'AI suggestions are unavailable right now.';
+      const assistantReply = response.message;
+      const persistedChatId = response.chat?._id || newChatId;
 
       setChats((previousChats) =>
         previousChats
@@ -131,15 +176,33 @@ export default function Dashboard() {
             chat.id === newChatId
               ? {
                   ...chat,
-                  messages: [...chat.messages, { role: 'assistant', content: assistantReply }],
+                  id: persistedChatId,
+                  title: response.chat?.title || chat.title,
+                  messages: [
+                    ...chat.messages,
+                    {
+                      role: 'assistant',
+                      content: assistantReply,
+                      sources: response.sources ?? [],
+                      searchMode: response.searchMode ?? requestedSearchMode,
+                    },
+                  ],
                   updatedAt: new Date().toISOString(),
                 }
               : chat,
           )
           .sort((first, second) => second.updatedAt.localeCompare(first.updatedAt)),
       );
+      setActiveChatId((currentChatId) =>
+        currentChatId === newChatId ? persistedChatId : currentChatId,
+      );
     } catch (error) {
       console.error('Unable to get AI response.', error);
+      const errorMessage =
+        error.response?.data?.message ||
+        (error.request
+          ? 'Cannot connect to the server. Check that the backend is running.'
+          : 'Unable to get an AI response. Please try again.');
       setChats((previousChats) =>
         previousChats
           .map((chat) =>
@@ -148,7 +211,7 @@ export default function Dashboard() {
                   ...chat,
                   messages: [
                     ...chat.messages,
-                    { role: 'assistant', content: 'AI suggestions are unavailable right now. Please try again.' },
+                    { role: 'assistant', content: `Unable to get an AI response: ${errorMessage}` },
                   ],
                   updatedAt: new Date().toISOString(),
                 }
@@ -156,6 +219,8 @@ export default function Dashboard() {
           )
           .sort((first, second) => second.updatedAt.localeCompare(first.updatedAt)),
       );
+    } finally {
+      setIsSending(false);
     }
   }
 
@@ -173,7 +238,7 @@ export default function Dashboard() {
   }
 
   return (
-    <main className="flex h-dvh overflow-hidden bg-[#212121] text-[#ececec]">
+    <main className={`flex h-dvh overflow-hidden ${isDark ? 'bg-[#212121] text-[#ececec]' : 'bg-white text-slate-900'}`}>
       {sidebarOpen && (
         <button
           type="button"
@@ -184,7 +249,9 @@ export default function Dashboard() {
       )}
 
       <aside
-        className={`fixed inset-y-0 left-0 z-30 flex w-{260px} shrink-0 flex-col bg-[#171717] p-3 transition-transform duration-200 md:static md:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-30 flex w-{260px} shrink-0 flex-col p-3 transition-transform duration-200 md:static md:translate-x-0 ${
+          isDark ? 'bg-[#171717]' : 'bg-slate-100'
+        } ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
@@ -196,7 +263,11 @@ export default function Dashboard() {
             type="button"
             aria-label="Close sidebar"
             onClick={() => setSidebarOpen(false)}
-            className="rounded-lg p-2 text-[#a3a3a3] transition hover:bg-[#262626] hover:text-white md:hidden"
+            className={`rounded-lg p-2 transition md:hidden ${
+              isDark
+                ? 'text-[#a3a3a3] hover:bg-[#262626] hover:text-white'
+                : 'text-slate-500 hover:bg-slate-200 hover:text-slate-900'
+            }`}
           >
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className="size-5">
               <path d="m6 6 12 12M18 6 6 18" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
@@ -207,27 +278,35 @@ export default function Dashboard() {
         <button
           type="button"
           onClick={startNewChat}
-          className="flex w-full items-center gap-3 rounded-xl border border-white/10 px-3 py-2.5 text-left text-sm font-medium transition hover:bg-[#262626]"
+          className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-sm font-medium transition ${
+            isDark
+              ? 'border-white/10 hover:bg-[#262626]'
+              : 'border-slate-300 hover:bg-slate-200'
+          }`}
         >
           <NewChatIcon />
           <span>New chat</span>
         </button>
 
         <div className="mt-8 min-h-0 flex-1 overflow-y-auto">
-          <p className="mb-2 px-3 text-xs font-medium text-[#8e8e8e]">Recent</p>
-          {chats.length === 0 ? (
-            <p className="px-3 py-2 text-xs leading-5 text-[#777]">
+          <p className={`mb-2 px-3 text-xs font-medium ${isDark ? 'text-[#8e8e8e]' : 'text-slate-500'}`}>Recent</p>
+          {savedChats.length === 0 ? (
+            <p className={`px-3 py-2 text-xs leading-5 ${isDark ? 'text-[#777]' : 'text-slate-500'}`}>
               Your conversations will show up here.
             </p>
           ) : (
             <ul className="space-y-1">
-              {chats.map((chat) => (
+              {savedChats.map((chat) => (
                 <li key={chat.id}>
                   <div
                     className={`group flex items-center gap-1 rounded-lg pr-1 transition ${
                       activeChatId === chat.id
-                        ? 'bg-[#2f2f2f] text-white'
-                        : 'text-[#c5c5c5] hover:bg-[#242424]'
+                        ? isDark
+                          ? 'bg-[#2f2f2f] text-white'
+                          : 'bg-slate-200 text-slate-900'
+                        : isDark
+                          ? 'text-[#c5c5c5] hover:bg-[#242424]'
+                          : 'text-slate-600 hover:bg-slate-200'
                     }`}
                   >
                     <button
@@ -244,7 +323,11 @@ export default function Dashboard() {
                       type="button"
                       onClick={(event) => removeChat(event, chat.id)}
                       aria-label={`Delete ${chat.title}`}
-                      className="rounded p-1 text-[#8e8e8e] opacity-0 transition hover:bg-[#3b3b3b] hover:text-white group-hover:opacity-100 focus:opacity-100"
+                      className={`rounded p-1 opacity-0 transition group-hover:opacity-100 focus:opacity-100 ${
+                        isDark
+                          ? 'text-[#8e8e8e] hover:bg-[#3b3b3b] hover:text-white'
+                          : 'text-slate-500 hover:bg-slate-300 hover:text-slate-900'
+                      }`}
                     >
                       <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className="size-4">
                         <path
@@ -263,46 +346,114 @@ export default function Dashboard() {
           )}
         </div>
 
-        <div className="mt-3 border-t border-white/10 px-3 pt-4 text-xs text-[#8e8e8e]">
-          Chats are saved on this device
+        <div className={`mt-3 border-t px-3 pt-4 text-xs ${isDark ? 'border-white/10 text-[#8e8e8e]' : 'border-slate-300 text-slate-500'}`}>
+          {isIncognito ? 'Incognito chats are not saved' : 'Chats are saved on this device'}
         </div>
       </aside>
 
-      <section className="flex min-w-0 flex-1 flex-col">
+      <section className={`flex min-w-0 flex-1 flex-col ${isDark ? 'bg-[#212121] text-[#ececec]' : 'bg-white text-slate-900'}`}>
         <header className="flex h-14 shrink-0 items-center justify-between px-4 md:px-6">
           <div className="flex items-center gap-2">
             <button
               type="button"
               aria-label="Open chat history"
               onClick={() => setSidebarOpen(true)}
-              className="rounded-lg p-2 text-[#c5c5c5] transition hover:bg-white/10 md:hidden"
+              className={`rounded-lg p-2 transition md:hidden ${
+                isDark
+                  ? 'text-[#c5c5c5] hover:bg-white/10'
+                  : 'text-slate-600 hover:bg-slate-100'
+              }`}
             >
               <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className="size-5">
                 <path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
               </svg>
             </button>
-            <span className="text-sm font-medium text-[#ececec]">Syntra</span>
-            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="size-4 text-[#8e8e8e]">
+            <span className={`text-sm font-medium ${isDark ? 'text-[#ececec]' : 'text-slate-800'}`}>Syntra</span>
+            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={`size-4 ${isDark ? 'text-[#8e8e8e]' : 'text-slate-500'}`}>
               <path d="m6 8 4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </div>
-          <div className="flex size-8 items-center justify-center rounded-full bg-violet-500/20 text-xs font-semibold text-violet-200">
-            S
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={toggleIncognito}
+              disabled={isSending}
+              aria-pressed={isIncognito}
+              className={`rounded-full border px-3 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                isIncognito
+                  ? 'border-violet-400/50 bg-violet-400/15 text-violet-300'
+                  : isDark
+                    ? 'border-white/10 text-[#c5c5c5] hover:bg-white/10'
+                    : 'border-slate-300 text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              {isIncognito ? 'Incognito on' : 'Incognito'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setTheme((currentTheme) => currentTheme === 'dark' ? 'light' : 'dark')}
+              aria-label={`Switch to ${isDark ? 'light' : 'dark'} mode`}
+              className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${
+                isDark
+                  ? 'border-white/10 text-[#c5c5c5] hover:bg-white/10'
+                  : 'border-slate-300 text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              {isDark ? 'Light mode' : 'Dark mode'}
+            </button>
+            <div className={`flex size-8 items-center justify-center rounded-full bg-violet-500/20 text-xs font-semibold ${isDark ? 'text-violet-200' : 'text-violet-700'}`}>
+              S
+            </div>
           </div>
         </header>
 
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex-1 overflow-y-auto px-4">
+            {isIncognito && (
+              <p className="mx-auto mt-3 w-fit rounded-full border border-violet-400/30 bg-violet-400/10 px-3 py-1 text-xs text-violet-300">
+                Incognito chat — this conversation won’t be saved
+              </p>
+            )}
             {activeChat?.messages.length ? (
               <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 py-10 md:py-14">
                 {activeChat.messages.map((chatMessage, index) => (
                   <article key={`${activeChat.id}-${index}`} className="flex gap-4">
-                    <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-[#343434] text-xs font-semibold text-white">
+                    <div className={`mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+                      isDark ? 'bg-[#343434] text-white' : 'bg-slate-200 text-slate-700'
+                    }`}>
                       S
                     </div>
-                    <p className="min-w-0 flex-1 whitespace-pre-wrap pt-1.5 text-[15px] leading-7 text-[#ececec]">
-                      {chatMessage.content}
-                    </p>
+                    <div className="min-w-0 flex-1">
+                      <p className={`whitespace-pre-wrap pt-1.5 text-[15px] leading-7 ${isDark ? 'text-[#ececec]' : 'text-slate-800'}`}>
+                        {chatMessage.content}
+                      </p>
+                      {chatMessage.sources?.length > 0 && (
+                        <div className="mt-4">
+                          <p className={`mb-2 text-xs font-medium ${isDark ? 'text-[#a3a3a3]' : 'text-slate-500'}`}>
+                            Sources
+                          </p>
+                          <ul className="flex flex-wrap gap-2">
+                            {chatMessage.sources.map((source, sourceIndex) => (
+                              <li key={`${source.url}-${sourceIndex}`}>
+                                <a
+                                  href={source.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className={`inline-flex max-w-full items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs transition ${
+                                    isDark
+                                      ? 'border-white/10 text-[#c5c5c5] hover:border-white/25 hover:text-white'
+                                      : 'border-slate-300 text-slate-600 hover:border-slate-400 hover:text-slate-900'
+                                  }`}
+                                >
+                                  <span className="text-violet-300">[{sourceIndex + 1}]</span>
+                                  <span className="max-w-56 truncate">{source.title}</span>
+                                </a>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
                   </article>
                 ))}
               </div>
@@ -312,7 +463,7 @@ export default function Dashboard() {
                   <div className="mx-auto mb-5 flex size-12 items-center justify-center rounded-2xl bg-violet-500/15 text-xl font-semibold text-violet-300">
                     S
                   </div>
-                  <h1 className="text-2xl font-semibold tracking-tight text-[#f4f4f4] sm:text-3xl">
+                  <h1 className={`text-2xl font-semibold tracking-tight sm:text-3xl ${isDark ? 'text-[#f4f4f4]' : 'text-slate-900'}`}>
                     What can I help with?
                   </h1>
                 </div>
@@ -325,12 +476,16 @@ export default function Dashboard() {
                         setMessage(suggestion.prompt);
                         textareaRef.current?.focus();
                       }}
-                      className="rounded-2xl border border-white/10 p-4 text-left transition hover:border-white/20 hover:bg-white/5"
+                      className={`rounded-2xl border p-4 text-left transition ${
+                        isDark
+                          ? 'border-white/10 hover:border-white/20 hover:bg-white/5'
+                          : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
+                      }`}
                     >
-                      <span className="block text-sm font-medium text-[#e5e5e5]">
+                      <span className={`block text-sm font-medium ${isDark ? 'text-[#e5e5e5]' : 'text-slate-700'}`}>
                         {suggestion.title}
                       </span>
-                      <span className="mt-1 block text-xs text-[#8e8e8e]">
+                      <span className={`mt-1 block text-xs ${isDark ? 'text-[#8e8e8e]' : 'text-slate-500'}`}>
                         {suggestion.prompt.trim()}
                       </span>
                     </button>
@@ -343,11 +498,16 @@ export default function Dashboard() {
           <div className="shrink-0 px-4 pb-4 pt-2">
             <form
               onSubmit={submitMessage}
-              className="mx-auto w-full max-w-3xl rounded-[1.75rem] border border-white/10 bg-[#2f2f2f] p-2 shadow-lg shadow-black/10 focus-within:border-white/20"
+              className={`mx-auto w-full max-w-3xl rounded-[1.75rem] border p-2 shadow-lg focus-within:border-violet-400/50 ${
+                isDark
+                  ? 'border-white/10 bg-[#2f2f2f] shadow-black/10'
+                  : 'border-slate-300 bg-slate-100 shadow-slate-200/50'
+              }`}
             >
               <textarea
                 ref={textareaRef}
                 value={message}
+                disabled={isSending}
                 onChange={(event) => {
                   setMessage(event.target.value);
                   event.target.style.height = 'auto';
@@ -357,21 +517,76 @@ export default function Dashboard() {
                 rows={1}
                 placeholder="Message Syntra"
                 aria-label="Message Syntra"
-                className="block max-h-{180px} min-h-11 w-full resize-none bg-transparent px-3 py-3 text-sm leading-5 text-white outline-none placeholder:text-[#8e8e8e]"
+                className={`block max-h-{180px} min-h-11 w-full resize-none bg-transparent px-3 py-3 text-sm leading-5 outline-none ${
+                  isDark
+                    ? 'text-white placeholder:text-[#8e8e8e]'
+                    : 'text-slate-900 placeholder:text-slate-500'
+                }`}
               />
               <div className="flex items-center justify-between px-1 pb-0.5">
-                <span className="px-2 text-xs text-[#8e8e8e]">Shift + Enter for a new line</span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    aria-pressed={searchMode === 'web'}
+                    disabled={isSending}
+                    onClick={() =>
+                      setSearchMode((mode) => (mode === 'web' ? 'none' : 'web'))
+                    }
+                    className={`rounded-full border px-3 py-1.5 text-xs transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                      searchMode === 'web'
+                        ? 'border-sky-400/50 bg-sky-400/15 text-sky-200'
+                        : isDark
+                          ? 'border-white/10 text-[#a3a3a3] hover:border-white/25 hover:text-white'
+                          : 'border-slate-300 text-slate-600 hover:border-slate-400 hover:text-slate-900'
+                    }`}
+                  >
+                    Web search
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={searchMode === 'deep'}
+                    disabled={isSending}
+                    onClick={() =>
+                      setSearchMode((mode) => (mode === 'deep' ? 'none' : 'deep'))
+                    }
+                    className={`rounded-full border px-3 py-1.5 text-xs transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                      searchMode === 'deep'
+                        ? 'border-violet-400/50 bg-violet-400/15 text-violet-200'
+                        : isDark
+                          ? 'border-white/10 text-[#a3a3a3] hover:border-white/25 hover:text-white'
+                          : 'border-slate-300 text-slate-600 hover:border-slate-400 hover:text-slate-900'
+                    }`}
+                  >
+                    Deep research
+                  </button>
+                  <span className={`hidden px-1 text-xs sm:inline ${isDark ? 'text-[#777]' : 'text-slate-500'}`}>
+                    Shift + Enter for a new line
+                  </span>
+                </div>
                 <button
                   type="submit"
-                  disabled={!message.trim()}
+                  disabled={!message.trim() || isSending}
                   aria-label="Send message"
-                  className="flex size-9 items-center justify-center rounded-full bg-white text-[#202020] transition hover:bg-[#dedede] disabled:cursor-not-allowed disabled:bg-[#555] disabled:text-[#999]"
+                  className={`flex size-9 items-center justify-center rounded-full transition disabled:cursor-not-allowed ${
+                    isDark
+                      ? 'bg-white text-[#202020] hover:bg-[#dedede] disabled:bg-[#555] disabled:text-[#999]'
+                      : 'bg-slate-800 text-white hover:bg-slate-700 disabled:bg-slate-300 disabled:text-slate-500'
+                  }`}
                 >
                   <SendIcon />
                 </button>
               </div>
             </form>
-            <p className="mx-auto mt-3 max-w-3xl text-center text-[11px] text-[#777]">
+            {isSending && (
+              <p role="status" className={`mx-auto mt-2 max-w-3xl text-center text-xs ${isDark ? 'text-[#a3a3a3]' : 'text-slate-500'}`}>
+                {searchMode === 'deep'
+                  ? 'Deep research is searching and reviewing sources...'
+                  : searchMode === 'web'
+                    ? 'Searching the web...'
+                    : 'Syntra is thinking...'}
+              </p>
+            )}
+            <p className={`mx-auto mt-3 max-w-3xl text-center text-[11px] ${isDark ? 'text-[#777]' : 'text-slate-500'}`}>
               Syntra can make mistakes. Check important information.
             </p>
           </div>

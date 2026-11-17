@@ -11,7 +11,7 @@ const initialForm = {
 
 export default function RegisterForm() {
   const [formData, setFormData] = useState(initialForm);
-  const [success, setSuccess] = useState(false);
+  const [success, setSuccess] = useState('');
   const { handleRegister } = useAuth();
   const { error, loading } = useSelector((state) => state.auth);
 
@@ -40,6 +40,11 @@ export default function RegisterForm() {
           Join us
         </p>
         <h2 className="text-3xl font-bold text-white">Create account</h2>
+        {import.meta.env.DEV && import.meta.env.VITE_USE_DEMO_AUTH !== 'false' && (
+          <p className="text-sm text-slate-300">
+            Demo accounts are kept while the backend is running.
+          </p>
+        )}
       </div>
 
       <div className="space-y-5">
@@ -105,7 +110,7 @@ export default function RegisterForm() {
       {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
       {success && (
         <p role="status" className="text-sm text-green-300">
-          Registration successful.
+          {success}
         </p>
       )}
 

@@ -1,19 +1,30 @@
 import axios from "axios";
 
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || "http://localhost:3000",
+  baseURL: import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "/" : "http://localhost:3000"),
   withCredentials: true,
 });
 
-if (typeof window !== "undefined") {
-  const token = window.localStorage.getItem("token");
-  if (token) {
-    api.defaults.headers.common.Authorization = `Bearer ${token}`;
+api.interceptors.request.use((config) => {
+  if (typeof window !== "undefined") {
+    const token = window.localStorage.getItem("token");
+    if (token) {
+      config.headers.Authorization = "Bearer " + token;
+    } else {
+      delete config.headers.Authorization;
+    }
   }
-}
+  return config;
+});
 
-export const sendMessage = async ({ message, chatId }) => {
-  const response = await api.post("/api/chat/send", { message, chatId });
+export const sendMessage = async ({ message, chatId, history, searchMode, incognito }) => {
+  const response = await api.post("/api/chat/send", {
+    message,
+    chatId,
+    history,
+    searchMode,
+    incognito,
+  });
   return response.data;
 };
 

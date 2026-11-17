@@ -8,8 +8,10 @@ export async function connectDB() {
     throw new Error("MONGO_URI is not configured. Add it to Backend/.env.");
   }
 
+  const dbName = process.env.MONGO_DB_NAME || "nexora";
+
   try {
-    await mongoose.connect(mongoUri);
+    await mongoose.connect(mongoUri, { dbName });
   } catch (error) {
     if (error.code !== "ECONNREFUSED" || !error.syscall?.startsWith("querySrv")) {
       throw error;
@@ -30,7 +32,7 @@ export async function connectDB() {
       `MongoDB SRV lookup was refused by the system DNS resolver; retrying with ${dnsServers.join(", ")}`,
     );
     dns.setServers(dnsServers);
-    await mongoose.connect(mongoUri);
+    await mongoose.connect(mongoUri, { dbName });
   }
 
   console.log("MongoDB connected");
