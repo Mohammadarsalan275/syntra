@@ -3,9 +3,18 @@ import chatModel from "../models/chat.model.js";
 import messageModel from "../models/message.model.js";
 import { randomBytes } from "node:crypto";
 import { generateResponse, generateTitle } from "../service/ai.service.js";
+import { extractDocumentText } from "../service/document.service.js";
 import { deepSearchInternet, searchInternet } from "../service/internet.service.js";
 
 function getClientHistory(history = []) {
+  if (typeof history === "string") {
+    try {
+      history = JSON.parse(history);
+    } catch {
+      return [];
+    }
+  }
+
   return Array.isArray(history)
     ? history
         .filter(
@@ -29,11 +38,30 @@ export async function sendMessage(req, res) {
   }
 
   let trimmedMessage = String(message).trim();
+  const isRegenerateRequest = regenerate === true || regenerate === "true";
   const searchMode = ["web", "deep"].includes(req.body.searchMode)
     ? req.body.searchMode
     : "none";
+  let document = null;
 
-  if (req.body.incognito === true) {
+  if (req.file) {
+    try {
+      document = {
+        text: await extractDocumentText(req.file),
+        name: req.file.originalname,
+      };
+    } catch (error) {
+      console.error("Unable to extract uploaded document:", error.message);
+      return res.status(error.statusCode || 500).json({
+        success: false,
+        message: error.statusCode
+          ? error.message
+          : "Unable to process the uploaded document. Please try again.",
+      });
+    }
+  }
+
+  if (req.body.incognito === true || req.body.incognito === "true") {
     const history = getClientHistory(req.body.history);
 
     try {
@@ -44,9 +72,17 @@ export async function sendMessage(req, res) {
         ? await deepSearchInternet(trimmedMessage)
         : null;
       const result = deepSearch
-        ? deepSearch.report
+        ? document
+          ? await generateResponse(trimmedMessage, history, {
+              searchResults: deepSearch.sources ?? [],
+              documentText: document.text,
+              documentName: document.name,
+            })
+          : deepSearch.report
         : await generateResponse(trimmedMessage, history, {
             searchResults: search?.sources ?? [],
+            documentText: document?.text,
+            documentName: document?.name,
           });
 
       return res.status(200).json({
@@ -66,6 +102,7 @@ export async function sendMessage(req, res) {
         searchMode,
         incognito: true,
         localOnly: true,
+        documentName: document?.name,
       });
     } catch (error) {
       console.error("Incognito AI/search response failed:", error.message);
@@ -86,7 +123,7 @@ export async function sendMessage(req, res) {
       const deepSearch = searchMode === "deep"
         ? await deepSearchInternet(trimmedMessage)
         : null;
-      if (searchMode !== "none" && !deepSearch && search.sources.length === 0) {
+      if (searchMode !== "none" && !deepSearch && search.sources.length === 0 && !document) {
         return res.status(200).json({
           success: true,
           message: "No relevant web sources were found. Try a different search query.",
@@ -99,13 +136,22 @@ export async function sendMessage(req, res) {
           sources: [],
           searchMode,
           localOnly: true,
+          documentName: document?.name,
         });
       }
       const [result, title] = await Promise.all([
         deepSearch
-          ? Promise.resolve(deepSearch.report)
+          ? document
+            ? generateResponse(trimmedMessage, history, {
+                searchResults: deepSearch.sources ?? [],
+                documentText: document.text,
+                documentName: document.name,
+              })
+            : Promise.resolve(deepSearch.report)
           : generateResponse(trimmedMessage, history, {
               searchResults: search?.sources ?? [],
+              documentText: document?.text,
+              documentName: document?.name,
             }),
         chatId ? Promise.resolve(null) : generateTitle(trimmedMessage),
       ]);
@@ -123,6 +169,7 @@ export async function sendMessage(req, res) {
         sources: deepSearch?.sources ?? search?.sources ?? [],
         searchMode,
         localOnly: true,
+        documentName: document?.name,
       });
     } catch (error) {
       console.error("Demo AI/search response failed:", error.message);
@@ -137,7 +184,7 @@ export async function sendMessage(req, res) {
     ? await chatModel.findOne({ _id: chatId, user: req.user._id })
     : null;
 
-  if (regenerate && !chat) {
+  if (isRegenerateRequest && !chat) {
     return res.status(404).json({
       success: false,
       message: "Chat not found",
@@ -151,10 +198,18 @@ export async function sendMessage(req, res) {
         .select("role content")
         .lean()
     : getClientHistory(req.body.history);
+  if (document) {
+    history = history
+      .slice(-20)
+      .map(({ role, content }) => ({
+        role,
+        content: String(content).slice(-4000),
+      }));
+  }
   let regenerateUserMessage = null;
   let supersededAssistantMessageIds = [];
 
-  if (regenerate && chat) {
+  if (isRegenerateRequest && chat) {
     const conversation = await messageModel
       .find({ chat: chat._id })
       .sort({ createdAt: 1 })
@@ -197,9 +252,17 @@ export async function sendMessage(req, res) {
     }
 
     result = deepSearch
-      ? deepSearch.report
+      ? document
+        ? await generateResponse(trimmedMessage, history, {
+            searchResults: deepSearch.sources ?? [],
+            documentText: document.text,
+            documentName: document.name,
+          })
+        : deepSearch.report
       : await generateResponse(trimmedMessage, history, {
           searchResults: search?.sources ?? [],
+          documentText: document?.text,
+          documentName: document?.name,
         });
   } catch (error) {
     console.error("AI/search response failed:", error.message);
@@ -210,7 +273,7 @@ export async function sendMessage(req, res) {
   }
 
   const searchSources = deepSearch?.sources ?? search?.sources ?? [];
-  if (searchMode !== "none" && !deepSearch && searchSources.length === 0) {
+  if (searchMode !== "none" && !deepSearch && searchSources.length === 0 && !document) {
     return res.status(200).json({
       success: true,
       message: "No relevant web sources were found. Try a different search query.",
@@ -264,6 +327,7 @@ export async function sendMessage(req, res) {
     aiMessage,
     sources: searchSources,
     searchMode,
+    documentName: document?.name,
   });
 }
 

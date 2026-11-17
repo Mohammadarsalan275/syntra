@@ -3,6 +3,8 @@ import { deleteChat as deleteChatRequest, renameChat, sendMessage } from './serv
 
 const STORAGE_KEY = 'syntra-chat-history';
 const THEME_STORAGE_KEY = 'syntra-theme';
+const MAX_DOCUMENT_SIZE = 10 * 1024 * 1024;
+const DOCUMENT_EXTENSIONS = /\.(pdf|docx|txt)$/i;
 
 function loadChats() {
   try {
@@ -81,7 +83,9 @@ export default function Dashboard() {
   const [chatTitleDraft, setChatTitleDraft] = useState('');
   const [actionError, setActionError] = useState('');
   const [copiedMessageId, setCopiedMessageId] = useState('');
+  const [documentFile, setDocumentFile] = useState(null);
   const textareaRef = useRef(null);
+  const documentInputRef = useRef(null);
   const isDark = theme === 'dark';
   const activeChat = chats.find((chat) => chat.id === activeChatId);
   const savedChats = useMemo(
@@ -114,6 +118,7 @@ export default function Dashboard() {
   function startNewChat() {
     setActiveChatId(null);
     setMessage('');
+    setDocumentFile(null);
     setSidebarOpen(false);
     textareaRef.current?.focus();
   }
@@ -124,10 +129,12 @@ export default function Dashboard() {
     setIsIncognito((enabled) => !enabled);
   }
 
-  async function submitMessage(event) {
+  function submitMessage(event) {
     event.preventDefault();
-    const content = message.trim();
+    void sendContent(message.trim());
+  }
 
+  async function sendContent(content) {
     if (!content || isSending) return;
 
     const requestedSearchMode = searchMode;
@@ -148,7 +155,10 @@ export default function Dashboard() {
             chat.id === existingChat.id
               ? {
                   ...chat,
-                  messages: [...chat.messages, { role: 'user', content }],
+                  messages: [
+                    ...chat.messages,
+                    { role: 'user', content, documentName: documentFile?.name },
+                  ],
                   updatedAt: timestamp,
                 }
               : chat,
@@ -159,7 +169,7 @@ export default function Dashboard() {
       const newChat = {
         id: newChatId,
         title: content.length > 42 ? `${content.slice(0, 42).trim()}…` : content,
-        messages: [{ role: 'user', content }],
+        messages: [{ role: 'user', content, documentName: documentFile?.name }],
         updatedAt: timestamp,
         incognito: isIncognito,
         localOnly: true,
@@ -180,6 +190,7 @@ export default function Dashboard() {
         history: existingChat?.messages ?? [],
         searchMode: requestedSearchMode,
         incognito: existingChat?.incognito === true || isIncognito,
+        document: documentFile,
       });
 
       const assistantReply = response.message;
@@ -312,6 +323,7 @@ export default function Dashboard() {
         searchMode: chat.messages[assistantIndex].searchMode ?? 'none',
         incognito: chat.incognito === true,
         regenerate: !chat.localOnly && /^[a-f\d]{24}$/i.test(chat.id),
+        document: documentFile,
       });
       const replacementChatId =
         response.localOnly !== true && response.chat?._id
@@ -362,6 +374,24 @@ export default function Dashboard() {
       console.error('Unable to copy response.', error);
       setActionError('Unable to copy this response. Check your clipboard permissions and try again.');
     }
+  }
+
+  function handleDocumentChange(event) {
+    const [file] = event.target.files ?? [];
+    event.target.value = '';
+    if (!file) return;
+
+    if (!DOCUMENT_EXTENSIONS.test(file.name)) {
+      setActionError('Choose a PDF, DOCX, or TXT document.');
+      return;
+    }
+    if (file.size > MAX_DOCUMENT_SIZE) {
+      setActionError('Documents must be 10 MB or smaller.');
+      return;
+    }
+
+    setDocumentFile(file);
+    setActionError('');
   }
 
   function handleComposerKeyDown(event) {
@@ -476,6 +506,7 @@ export default function Dashboard() {
                         type="button"
                         onClick={() => {
                           setActiveChatId(chat.id);
+                          setDocumentFile(null);
                           setSidebarOpen(false);
                         }}
                         className="min-w-0 flex-1 truncate px-3 py-2 text-left text-sm"
@@ -618,6 +649,11 @@ export default function Dashboard() {
                       <p className={`whitespace-pre-wrap pt-1.5 text-[15px] leading-7 ${isDark ? 'text-[#ececec]' : 'text-slate-800'}`}>
                         {chatMessage.content}
                       </p>
+                      {chatMessage.documentName && (
+                        <p className={`mt-2 text-xs ${isDark ? 'text-[#8e8e8e]' : 'text-slate-500'}`}>
+                          Attached: {chatMessage.documentName}
+                        </p>
+                      )}
                       {chatMessage.sources?.length > 0 && (
                         <div className="mt-4">
                           <p className={`mb-2 text-xs font-medium ${isDark ? 'text-[#a3a3a3]' : 'text-slate-500'}`}>
@@ -720,6 +756,51 @@ export default function Dashboard() {
                   : 'border-slate-300 bg-slate-100 shadow-slate-200/50'
               }`}
             >
+              <input
+                ref={documentInputRef}
+                type="file"
+                accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
+                onChange={handleDocumentChange}
+                className="hidden"
+              />
+              {documentFile && (
+                <div className={`mb-2 flex flex-wrap items-center gap-2 rounded-xl px-3 py-2 ${
+                  isDark ? 'bg-white/5' : 'bg-white'
+                }`}>
+                  <span className="min-w-0 flex-1 truncate text-xs">{documentFile.name}</span>
+                  <button
+                    type="button"
+                    disabled={isSending}
+                    onClick={() => void sendContent(
+                      'Summarize the attached document by section. Include its main ideas, conclusions, and important details.',
+                    )}
+                    className="rounded-full border border-violet-400/30 px-3 py-1 text-xs text-violet-300 transition hover:bg-violet-400/10 disabled:opacity-50"
+                  >
+                    Summarize
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSending}
+                    onClick={() => void sendContent(
+                      'Extract the important information from the attached document. List key facts, dates, names, figures, requirements, and action items. Do not infer details that are not stated.',
+                    )}
+                    className="rounded-full border border-violet-400/30 px-3 py-1 text-xs text-violet-300 transition hover:bg-violet-400/10 disabled:opacity-50"
+                  >
+                    Extract key info
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSending}
+                    aria-label="Remove attached document"
+                    onClick={() => setDocumentFile(null)}
+                    className={`rounded-full px-2 py-1 text-xs transition disabled:opacity-50 ${
+                      isDark ? 'text-[#a3a3a3] hover:bg-white/10' : 'text-slate-500 hover:bg-slate-100'
+                    }`}
+                  >
+                    Remove
+                  </button>
+                </div>
+              )}
               <textarea
                 ref={textareaRef}
                 value={message}
@@ -774,6 +855,18 @@ export default function Dashboard() {
                     }`}
                   >
                     Deep research
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSending}
+                    onClick={() => documentInputRef.current?.click()}
+                    className={`rounded-full border px-3 py-1.5 text-xs transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                      isDark
+                        ? 'border-white/10 text-[#a3a3a3] hover:border-white/25 hover:text-white'
+                        : 'border-slate-300 text-slate-600 hover:border-slate-400 hover:text-slate-900'
+                    }`}
+                  >
+                    Attach document
                   </button>
                   <span className={`hidden px-1 text-xs sm:inline ${isDark ? 'text-[#777]' : 'text-slate-500'}`}>
                     Shift + Enter for a new line

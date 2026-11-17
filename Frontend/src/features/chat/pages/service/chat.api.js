@@ -24,15 +24,28 @@ export const sendMessage = async ({
   searchMode,
   incognito,
   regenerate,
+  document,
 }) => {
-  const response = await api.post("/api/chat/send", {
+  const body = document ? new FormData() : {
     message,
     chatId,
     history,
     searchMode,
     incognito,
     regenerate,
-  });
+  };
+
+  if (document) {
+    body.append("document", document);
+    body.append("message", message);
+    if (chatId) body.append("chatId", chatId);
+    if (history) body.append("history", JSON.stringify(history));
+    if (searchMode) body.append("searchMode", searchMode);
+    if (incognito) body.append("incognito", "true");
+    if (regenerate) body.append("regenerate", "true");
+  }
+
+  const response = await api.post("/api/chat/send", body);
   return response.data;
 };
 
