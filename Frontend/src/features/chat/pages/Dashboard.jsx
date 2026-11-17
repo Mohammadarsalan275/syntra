@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { deleteChat as deleteChatRequest, renameChat, sendMessage } from './service/chat.api';
+import {
+  deleteChat as deleteChatRequest,
+  getChats,
+  importLocalChats,
+  renameChat,
+  sendMessage,
+} from './service/chat.api';
 
 const STORAGE_KEY = 'syntra-chat-history';
 const THEME_STORAGE_KEY = 'syntra-theme';
@@ -72,6 +78,7 @@ const suggestions = [
 
 export default function Dashboard() {
   const [chats, setChats] = useState(loadChats);
+  const initialChatIds = useRef(new Set(chats.map((chat) => chat.id)));
   const [activeChatId, setActiveChatId] = useState(null);
   const [message, setMessage] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -86,8 +93,12 @@ export default function Dashboard() {
   const [documentFile, setDocumentFile] = useState(null);
   const textareaRef = useRef(null);
   const documentInputRef = useRef(null);
+  const chatHydrationRequest = useRef(null);
   const isDark = theme === 'dark';
   const activeChat = chats.find((chat) => chat.id === activeChatId);
+  const activeDocument = [...(activeChat?.messages ?? [])]
+    .reverse()
+    .find((item) => item.role === 'user' && item.documentId);
   const savedChats = useMemo(
     () => chats.filter((chat) => chat.incognito !== true),
     [chats],
@@ -98,6 +109,70 @@ export default function Dashboard() {
         -1,
       )
     : -1;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!chatHydrationRequest.current) {
+      chatHydrationRequest.current = (async () => {
+        let response = await getChats();
+        if (response.localOnly) return { response, importedLocalIds: new Set() };
+
+        const localChats = loadChats().filter((chat) => chat.localOnly);
+        let importedLocalIds = new Set();
+        if (localChats.length) {
+          const importResponse = await importLocalChats(
+            localChats.map((chat) => ({
+              localId: chat.id,
+              title: chat.title,
+              messages: chat.messages,
+            })),
+          );
+          importedLocalIds = new Set(
+            importResponse.imported.map(({ localId }) => localId),
+          );
+          response = await getChats();
+        }
+
+        return { response, importedLocalIds };
+      })();
+    }
+
+    chatHydrationRequest.current
+      .then(({ response, importedLocalIds }) => {
+        if (cancelled || response.localOnly) return;
+        setChats((previousChats) => {
+          const serverChatIds = new Set(response.chats.map((chat) => chat.id));
+          const unsyncedChats = previousChats.filter(
+            (chat) =>
+              chat.localOnly &&
+              !importedLocalIds.has(chat.id) &&
+              !serverChatIds.has(chat.id),
+          );
+          const chatsCreatedDuringHydration = previousChats.filter(
+            (chat) =>
+              !initialChatIds.current.has(chat.id) &&
+              !importedLocalIds.has(chat.id) &&
+              !serverChatIds.has(chat.id),
+          );
+          return [...response.chats, ...unsyncedChats, ...chatsCreatedDuringHydration]
+            .sort((first, second) => second.updatedAt.localeCompare(first.updatedAt));
+        });
+      })
+      .catch((error) => {
+        console.error('Unable to load chats from MongoDB.', error);
+        if (!cancelled) {
+          setActionError(
+            error.response?.data?.message ||
+              'Unable to load saved chats. Your local chat history is still available.',
+          );
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -141,7 +216,20 @@ export default function Dashboard() {
     const timestamp = new Date().toISOString();
     const existingChat = chats.find((chat) => chat.id === activeChatId);
     const newChatId = existingChat?.id ?? crypto.randomUUID();
-    const serverChatId =
+    const attachedDocumentId = documentFile ? undefined : activeDocument?.documentId;
+    const userMessage = {
+      role: 'user',
+      content,
+      ...(documentFile
+        ? { documentName: documentFile.name }
+        : attachedDocumentId
+          ? {
+              documentId: attachedDocumentId,
+              documentName: activeDocument.documentName,
+            }
+          : {}),
+    };
+    let serverChatId =
       existingChat &&
       !existingChat.localOnly &&
       /^[a-f\d]{24}$/i.test(existingChat.id)
@@ -155,10 +243,7 @@ export default function Dashboard() {
             chat.id === existingChat.id
               ? {
                   ...chat,
-                  messages: [
-                    ...chat.messages,
-                    { role: 'user', content, documentName: documentFile?.name },
-                  ],
+                  messages: [...chat.messages, userMessage],
                   updatedAt: timestamp,
                 }
               : chat,
@@ -169,7 +254,7 @@ export default function Dashboard() {
       const newChat = {
         id: newChatId,
         title: content.length > 42 ? `${content.slice(0, 42).trim()}…` : content,
-        messages: [{ role: 'user', content, documentName: documentFile?.name }],
+        messages: [userMessage],
         updatedAt: timestamp,
         incognito: isIncognito,
         localOnly: true,
@@ -184,6 +269,24 @@ export default function Dashboard() {
     setIsSending(true);
 
     try {
+      if (existingChat?.localOnly && !existingChat.incognito && !isIncognito) {
+        try {
+          const importResponse = await importLocalChats([{
+            localId: existingChat.id,
+            title: existingChat.title,
+            messages: existingChat.messages,
+          }]);
+          serverChatId = importResponse.imported.find(
+            ({ localId }) => localId === existingChat.id,
+          )?.id;
+          if (!serverChatId) {
+            throw new Error('The local chat import did not return a saved chat.');
+          }
+        } catch (error) {
+          if (error.response?.status !== 503) throw error;
+        }
+      }
+
       const response = await sendMessage({
         message: content,
         chatId: serverChatId,
@@ -191,10 +294,12 @@ export default function Dashboard() {
         searchMode: requestedSearchMode,
         incognito: existingChat?.incognito === true || isIncognito,
         document: documentFile,
+        documentId: attachedDocumentId,
       });
 
       const assistantReply = response.message;
       const persistedChatId = response.chat?._id || newChatId;
+      const userMessageIndex = existingChat?.messages.length ?? 0;
 
       setChats((previousChats) =>
         previousChats
@@ -206,7 +311,15 @@ export default function Dashboard() {
                   title: response.chat?.title || chat.title,
                   localOnly: response.localOnly ?? !response.chat,
                   messages: [
-                    ...chat.messages,
+                    ...chat.messages.map((item, index) =>
+                      index === userMessageIndex && response.document
+                        ? {
+                            ...item,
+                            documentId: response.document.id,
+                            documentName: response.document.name,
+                          }
+                        : item,
+                    ),
                     {
                       role: 'assistant',
                       content: assistantReply,
@@ -223,6 +336,7 @@ export default function Dashboard() {
       setActiveChatId((currentChatId) =>
         currentChatId === newChatId ? persistedChatId : currentChatId,
       );
+      if (response.document) setDocumentFile(null);
     } catch (error) {
       console.error('Unable to get AI response.', error);
       const errorMessage =
@@ -310,20 +424,43 @@ export default function Dashboard() {
       .reduce((lastIndex, item, index) => item.role === 'user' ? index : lastIndex, -1);
     if (userIndex === -1 || isSending) return;
 
-    const serverChatId =
+    let serverChatId =
       !chat.localOnly && /^[a-f\d]{24}$/i.test(chat.id) ? chat.id : undefined;
     setIsSending(true);
     setActionError('');
 
     try {
+      if (chat.localOnly && !chat.incognito) {
+        try {
+          const importResponse = await importLocalChats([{
+            localId: chat.id,
+            title: chat.title,
+            messages: chat.messages,
+          }]);
+          serverChatId = importResponse.imported.find(
+            ({ localId }) => localId === chat.id,
+          )?.id;
+          if (!serverChatId) {
+            throw new Error('The local chat import did not return a saved chat.');
+          }
+        } catch (error) {
+          if (error.response?.status !== 503) throw error;
+        }
+      }
+
       const response = await sendMessage({
         message: chat.messages[userIndex].content,
         chatId: serverChatId,
         history: chat.messages.slice(0, userIndex),
         searchMode: chat.messages[assistantIndex].searchMode ?? 'none',
         incognito: chat.incognito === true,
-        regenerate: !chat.localOnly && /^[a-f\d]{24}$/i.test(chat.id),
-        document: documentFile,
+        regenerate: Boolean(serverChatId),
+        document:
+          chat.messages[userIndex].documentId ||
+          chat.messages[userIndex].documentName !== documentFile?.name
+            ? undefined
+            : documentFile,
+        documentId: chat.messages[userIndex].documentId,
       });
       const replacementChatId =
         response.localOnly !== true && response.chat?._id
@@ -763,6 +900,11 @@ export default function Dashboard() {
                 onChange={handleDocumentChange}
                 className="hidden"
               />
+              {activeDocument && !documentFile && (
+                <p className={`mb-2 px-3 text-xs ${isDark ? 'text-[#a3a3a3]' : 'text-slate-500'}`}>
+                  Using saved document: {activeDocument.documentName}
+                </p>
+              )}
               {documentFile && (
                 <div className={`mb-2 flex flex-wrap items-center gap-2 rounded-xl px-3 py-2 ${
                   isDark ? 'bg-white/5' : 'bg-white'

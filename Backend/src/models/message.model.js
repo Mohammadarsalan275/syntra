@@ -13,7 +13,10 @@ const messageSchema = new Schema(
     sender: {
       type: Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      index: true,
+    },
+    senderGuestId: {
+      type: String,
       index: true,
     },
     role: {
@@ -46,6 +49,10 @@ const messageSchema = new Schema(
         name: String,
         url: String,
         type: String,
+        documentId: {
+          type: Schema.Types.ObjectId,
+          ref: "chatDocumentModel",
+        },
       },
     ],
     isEdited: {

@@ -1,12 +1,14 @@
 import { Router } from "express";
 import {
   deleteChat,
+  createGuestSession,
   getChats,
+  importLocalChats,
   getMessages,
   renameChat,
   sendMessage,
 } from "../controllers/chat.controller.js";
-import { authUser } from "../middleware/auth.middleware.js";
+import { authChatUser, authUser } from "../middleware/auth.middleware.js";
 import multer from "multer";
 
 const router = Router();
@@ -35,10 +37,12 @@ function handleDocumentUpload(req, res, next) {
   });
 }
 
-router.post("/send", authUser, handleDocumentUpload, sendMessage);
-router.get("/chats", authUser, getChats);
-router.get("/chats/:chatId/messages", authUser, getMessages);
-router.patch("/chats/:chatId", authUser, renameChat);
-router.delete("/delete/:chatId", authUser, deleteChat);
+router.post("/guest-session", authUser, createGuestSession);
+router.post("/chats/import", authChatUser, importLocalChats);
+router.post("/send", authChatUser, handleDocumentUpload, sendMessage);
+router.get("/chats", authChatUser, getChats);
+router.get("/chats/:chatId/messages", authChatUser, getMessages);
+router.patch("/chats/:chatId", authChatUser, renameChat);
+router.delete("/delete/:chatId", authChatUser, deleteChat);
 
 export default router;

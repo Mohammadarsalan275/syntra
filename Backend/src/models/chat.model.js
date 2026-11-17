@@ -7,7 +7,10 @@ const chatSchema = new Schema(
     user: {
       type: Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      index: true,
+    },
+    guestId: {
+      type: String,
       index: true,
     },
     title: {
@@ -55,5 +58,16 @@ const chatSchema = new Schema(
   },
   { timestamps: true }
 );
+
+chatSchema.pre("validate", function () {
+  if (!this.user && !this.guestId) {
+    this.invalidate("user", "A chat must belong to a user or guest session.");
+  }
+  if (this.user && this.guestId) {
+    this.invalidate("guestId", "A chat cannot have both user and guest owners.");
+  }
+});
+
+chatSchema.index({ guestId: 1, updatedAt: -1 });
 
 export default mongoose.model("chatModel", chatSchema);
